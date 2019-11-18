@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	tree                      []Node
+	tree                      Folder
 	cellWidth                 int32
 	cellHeight                float32
 	composeServerURL          []byte
@@ -50,16 +50,25 @@ type Tag struct {
 	Name string `json:"name"`
 }
 
-// Node
-type Node struct {
-	Key      int     `json:"id"`
-	Title    string  `json:"text"`
-	URL      string  `json:"url"`
-	Folder   bool    `json:"hasChildren"`
-	Lazy     bool    `json:"lazy"`
-	Icon     string  `json:"icon"`
-	Children []*Node `json:"children"`
-	Tags     []*Tag  `json:"tag"`
+// Folder containing the bookmarks
+type Folder struct {
+	Id                int         `json:"id"`
+	Title             string      `json:"title"`
+	Parent            *Folder     `json:"parent"`
+	Folders           []*Folder   `json:"folders"`
+	Bookmarks         []*Bookmark `json:"bookmarks"`
+	NbChildrenFolders int         `json:"nbchildrenfolders"`
+}
+
+// Bookmark
+type Bookmark struct {
+	Id      int     `json:"id"`
+	Title   string  `json:"title"`
+	URL     string  `json:"url"`
+	Favicon string  `json:"favicon"` // base64 encoded image
+	Starred bool    `json:"starred"`
+	Folder  *Folder `json:"folder"` // reference to the folder to help
+	Tags    []*Tag  `json:"tags"`
 }
 
 func init() {
@@ -151,87 +160,83 @@ func openbrowser(url string) {
 	}
 }
 
-func buildTree(n *Node, ctx *nk.Context) {
-	switch n.URL {
-	case "":
-		// this is a folder
-		if nk.NkTreePushHashed(ctx, nk.TreeTab, n.Title, nk.Minimized, n.Title, int32(len(n.Title)), 0) > 0 {
+func buildTree(f *Folder, ctx *nk.Context) {
+
+	if nk.NkTreePushHashed(ctx, nk.TreeTab, f.Title, nk.Minimized, f.Title, int32(len(f.Title)), 0) > 0 {
+		nk.NkLayoutRowTemplateBegin(ctx, 30)
+		nk.NkLayoutRowTemplatePushStatic(ctx, 125)
+		nk.NkLayoutRowTemplatePushStatic(ctx, 125)
+		nk.NkLayoutRowTemplateEnd(ctx)
+		// add bookmark button
+		if nk.NkButtonLabel(ctx, "new bookmark") > 0 {
+			bookmarkCreated = f.Id
+			folderCreated = -1
+		}
+		// add folder button
+		if nk.NkButtonLabel(ctx, "new folder") > 0 {
+			folderCreated = f.Id
+			bookmarkCreated = -1
+		}
+		if folderCreated == f.Id {
+			// folder creation form
 			nk.NkLayoutRowTemplateBegin(ctx, 30)
-			nk.NkLayoutRowTemplatePushStatic(ctx, 125)
+			nk.NkLayoutRowTemplatePushVariable(ctx, 200)
 			nk.NkLayoutRowTemplatePushStatic(ctx, 125)
 			nk.NkLayoutRowTemplateEnd(ctx)
-			// add bookmark button
-			if nk.NkButtonLabel(ctx, "new bookmark") > 0 {
-				bookmarkCreated = n.Key
+			nk.NkEditStringZeroTerminated(
+				ctx,
+				nk.EditField|nk.EditSelectable|nk.EditClipboard|nk.EditNoHorizontalScroll|nk.TextEditSingleLine,
+				composeCreateFolderName,
+				256,
+				nk.NkFilterAscii)
+			if nk.NkButtonLabel(ctx, "ok") > 0 {
+				composeCreateFolderName = bytes.Trim(composeCreateFolderName, "\x00")
+				createFolder(string(composeCreateFolderName), f.Id)
 				folderCreated = -1
+
+				//refreshing tree
+				getRemoteBookmarks(serverURL)
 			}
-			// add folder button
-			if nk.NkButtonLabel(ctx, "new folder") > 0 {
-				folderCreated = n.Key
+		}
+		if bookmarkCreated == f.Id {
+			// bookmark creation form
+			nk.NkLayoutRowTemplateBegin(ctx, 30)
+			nk.NkLayoutRowTemplatePushVariable(ctx, 200)
+			nk.NkLayoutRowTemplatePushVariable(ctx, 200)
+			nk.NkLayoutRowTemplatePushStatic(ctx, 125)
+			nk.NkLayoutRowTemplateEnd(ctx)
+			nk.NkEditStringZeroTerminated(
+				ctx,
+				nk.EditField|nk.EditSelectable|nk.EditClipboard|nk.EditNoHorizontalScroll|nk.TextEditSingleLine,
+				composeCreateBookmarkName,
+				256,
+				nk.NkFilterAscii)
+			nk.NkEditStringZeroTerminated(
+				ctx,
+				nk.EditField|nk.EditSelectable|nk.EditClipboard|nk.EditNoHorizontalScroll|nk.TextEditSingleLine,
+				composeCreateBookmarkURL,
+				256,
+				nk.NkFilterAscii)
+			if nk.NkButtonLabel(ctx, "ok") > 0 {
+				fmt.Println("bookmark created")
 				bookmarkCreated = -1
 			}
-			if folderCreated == n.Key {
-				// folder creation form
-				nk.NkLayoutRowTemplateBegin(ctx, 30)
-				nk.NkLayoutRowTemplatePushVariable(ctx, 200)
-				nk.NkLayoutRowTemplatePushStatic(ctx, 125)
-				nk.NkLayoutRowTemplateEnd(ctx)
-				nk.NkEditStringZeroTerminated(
-					ctx,
-					nk.EditField|nk.EditSelectable|nk.EditClipboard|nk.EditNoHorizontalScroll|nk.TextEditSingleLine,
-					composeCreateFolderName,
-					256,
-					nk.NkFilterAscii)
-				if nk.NkButtonLabel(ctx, "ok") > 0 {
-					composeCreateFolderName = bytes.Trim(composeCreateFolderName, "\x00")
-					createFolder(string(composeCreateFolderName), n.Key)
-					folderCreated = -1
-
-					//refreshing tree
-					getRemoteBookmarks(serverURL)
-				}
+		}
+		for _, childb := range f.Bookmarks {
+			nk.NkLayoutRowTemplateBegin(ctx, 25)
+			nk.NkLayoutRowTemplatePushDynamic(ctx)
+			nk.NkLayoutRowTemplatePushStatic(ctx, 30)
+			nk.NkLayoutRowTemplateEnd(ctx)
+			nk.NkLabel(ctx, childb.Title, nk.TextAlignRight)
+			if nk.NkButtonSymbol(ctx, nk.SymbolCircleSolid) > 0 {
+				openbrowser(childb.URL)
 			}
-			if bookmarkCreated == n.Key {
-				// bookmark creation form
-				nk.NkLayoutRowTemplateBegin(ctx, 30)
-				nk.NkLayoutRowTemplatePushVariable(ctx, 200)
-				nk.NkLayoutRowTemplatePushVariable(ctx, 200)
-				nk.NkLayoutRowTemplatePushStatic(ctx, 125)
-				nk.NkLayoutRowTemplateEnd(ctx)
-				nk.NkEditStringZeroTerminated(
-					ctx,
-					nk.EditField|nk.EditSelectable|nk.EditClipboard|nk.EditNoHorizontalScroll|nk.TextEditSingleLine,
-					composeCreateBookmarkName,
-					256,
-					nk.NkFilterAscii)
-				nk.NkEditStringZeroTerminated(
-					ctx,
-					nk.EditField|nk.EditSelectable|nk.EditClipboard|nk.EditNoHorizontalScroll|nk.TextEditSingleLine,
-					composeCreateBookmarkURL,
-					256,
-					nk.NkFilterAscii)
-				if nk.NkButtonLabel(ctx, "ok") > 0 {
-					fmt.Println("bookmark created")
-					bookmarkCreated = -1
-				}
-			}
-			for _, c := range n.Children {
-				buildTree(c, ctx)
-			}
-
-			nk.NkTreePop(ctx)
+		}
+		for _, childf := range f.Folders {
+			buildTree(childf, ctx)
 		}
 
-	default:
-		// this is a bookmark
-		nk.NkLayoutRowTemplateBegin(ctx, 25)
-		nk.NkLayoutRowTemplatePushDynamic(ctx)
-		nk.NkLayoutRowTemplatePushStatic(ctx, 30)
-		nk.NkLayoutRowTemplateEnd(ctx)
-		nk.NkLabel(ctx, n.Title, nk.TextAlignRight)
-		if nk.NkButtonSymbol(ctx, nk.SymbolCircleSolid) > 0 {
-			openbrowser(n.URL)
-		}
+		nk.NkTreePop(ctx)
 	}
 }
 
@@ -309,9 +314,8 @@ func draw(win *glfw.Window, ctx *nk.Context) {
 			nk.NkFilterDefault)
 
 		// building the tree
-		for _, n := range tree {
-			buildTree(&n, ctx)
-		}
+		buildTree(&tree, ctx)
+
 	}
 	nk.NkEnd(ctx)
 
